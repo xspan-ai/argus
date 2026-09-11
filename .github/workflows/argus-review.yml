@@ -82,6 +82,16 @@ jobs:
           # PR head — check out the PR so a re-run reviews the code under review.
           ref: ${{ github.event_name == 'issue_comment' && format('refs/pull/{0}/head', github.event.issue.number) || '' }}
 
+      - name: Require an LLM credential
+        env:
+          OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: |
+          if [ -z "$OAUTH_TOKEN" ] && [ -z "$API_KEY" ]; then
+            echo "::error title=Argus has no LLM credential::Neither CLAUDE_CODE_OAUTH_TOKEN nor ANTHROPIC_API_KEY reached this workflow. claude-code-action exits SUCCESS when unauthenticated, so without this guard the job reports a green check having reviewed nothing. Check that the caller maps a secret that exists in the calling repo."
+            exit 1
+          fi
+
       - name: Run Argus
         uses: anthropics/claude-code-action@v1
         with:
