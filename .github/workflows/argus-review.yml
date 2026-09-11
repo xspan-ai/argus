@@ -174,8 +174,9 @@ jobs:
         env:
           CONCLUSION: ${{ steps.argus.outputs.conclusion }}
         run: |
-          if [ "$CONCLUSION" != "success" ]; then
-            echo "::error title=Argus did not review this PR::claude-code-action finished without reviewing (conclusion='"'"'${CONCLUSION:-<empty>}'"'"'). Most often this is the action'"'"'s workflow-validation guard: it only runs when .github/workflows/argus.yml on this branch is identical to the copy on the repository default branch. That is expected on a PR that adds or edits this workflow and clears once it merges. Failing here on purpose: a skipped run must never read as a passing review."
-            exit 1
+          if [ "$CONCLUSION" = "success" ]; then
+            echo "Argus completed a review. conclusion=success"
+            exit 0
           fi
-          echo "Argus completed a review (conclusion=success)."
+          echo "::error title=Argus did not review this PR::claude-code-action finished with conclusion=[${CONCLUSION:-empty}] rather than success, so no review was produced. Common causes: the action workflow-validation guard, which only runs when .github/workflows/argus.yml on this branch matches the copy on the default branch (expected on a PR that adds or edits this workflow), or an API/model error in the step above. Failing deliberately, because a run that reviewed nothing must never report a passing check."
+          exit 1
