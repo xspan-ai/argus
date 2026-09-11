@@ -2,6 +2,15 @@ name: Argus Review
 
 # Reusable + standalone PR-review workflow.
 #
+# xspan-ai fork. Differences from upstream karlmehta/argus:
+#   • Secrets are declared explicitly under workflow_call.secrets, so callers
+#     pass exactly the LLM credential and never `secrets: inherit`.
+#   • The review harness (config, prompts, skills, memory) is read from the
+#     CALLING repo under .github/argus/ — actions/checkout in a reusable
+#     workflow checks out the caller, so upstream's repo-root paths resolved
+#     to nothing and the reviewer ran unguided.
+#   • Comment re-runs are restricted to org members/collaborators.
+#
 # Argus reads the diff and the surrounding code, applies each enabled review
 # skill, cross-checks against the repo's memory, and posts ONE consolidated
 # review with severity-ranked, file:line-cited findings.
@@ -10,20 +19,32 @@ name: Argus Review
 #   • request-changes  — when a `blocker`/`major` finding is confirmed
 #   • comment          — the default: findings surfaced, human sign-off still required
 #   • approve          — OFF by default. Only enabled when a maintainer sets
-#                        `verdict.allow_approve: true` in config/argus.yml AND the
-#                        change is genuinely clean. Argus never approves to merely
-#                        clear a required-review gate; whether a bot approval counts
-#                        toward branch protection is a repo-owner decision.
+#                        `verdict.allow_approve: true` in the caller's
+#                        .github/argus/config.yml AND the change is genuinely
+#                        clean. Argus never approves to merely clear a required-
+#                        review gate; whether a bot approval counts toward branch
+#                        protection is a repo-owner decision.
 
 on:
   workflow_call:
     inputs:
       config-path:
-        description: Path to argus.yml
+        description: Path to argus config, relative to the calling repo.
         type: string
-        default: config/argus.yml
+        default: .github/argus/config.yml
+      model:
+        description: Model id passed to claude-code-action.
+        type: string
+        default: claude-sonnet-5
+    secrets:
+      CLAUDE_CODE_OAUTH_TOKEN:
+        description: Claude Code OAuth token. Takes precedence when both are set.
+        required: false
+      ANTHROPIC_API_KEY:
+        description: Anthropic API key. Used when no OAuth token is set.
+        required: false
   pull_request:
-    types: [opened, reopened, ready_for_review]
+    types: [opened, synchronize, reopened, ready_for_review]
   issue_comment:
     types: [created]
   workflow_dispatch:
@@ -32,7 +53,7 @@ permissions:
   contents: read
   pull-requests: write
   issues: read
-  id-token: write
+  id-token: write        # required by claude-code-action for OIDC to api.anthropic.com
 
 concurrency:
   group: argus-${{ github.event.pull_request.number || github.event.issue.number }}
@@ -40,7 +61,8 @@ concurrency:
 
 jobs:
   review:
-    # Non-draft same-repo PRs (forks can't read secrets) + explicit "@argus" mentions.
+    # Non-draft same-repo PRs (forks can't read secrets) + "@argus" mentions from
+    # people who can actually write to the repo (a comment burns an LLM run).
     if: >
       (github.event_name == 'workflow_dispatch') ||
       (github.event_name == 'pull_request' &&
@@ -48,13 +70,17 @@ jobs:
         github.event.pull_request.head.repo.full_name == github.repository) ||
       (github.event_name == 'issue_comment' &&
         github.event.issue.pull_request != null &&
-        contains(github.event.comment.body, '@argus'))
+        contains(github.event.comment.body, '@argus') &&
+        contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.comment.author_association))
     runs-on: ubuntu-latest
     steps:
       - name: Checkout (full history for conflict + base-diff analysis)
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
+          # On issue_comment the default checkout is the default branch, not the
+          # PR head — check out the PR so a re-run reviews the code under review.
+          ref: ${{ github.event_name == 'issue_comment' && format('refs/pull/{0}/head', github.event.issue.number) || '' }}
 
       - name: Run Argus
         uses: anthropics/claude-code-action@v1
@@ -66,16 +92,20 @@ jobs:
             You are **Argus**, this repository's automated PR reviewer.
             Review pull request #${{ github.event.pull_request.number || github.event.issue.number }}.
 
+            The review harness lives in this repository under `.github/argus/`.
             Follow the harness instructions exactly:
 
-            1. Read `prompts/system.md` — it defines your persona, rules, and
-               the hard line that you never approve to merely clear a gate.
-            2. Read `config/argus.yml` to learn which skills are enabled, the
-               severity gate, and path rules (skip/strict globs).
-            3. Load every enabled skill from `skills/<name>.md`. Each is a rubric.
-            4. Load repo memory: `memory/conventions.md`,
-               `memory/accepted-patterns.md`, and any relevant `memory/knowledge/*`.
-               Treat accepted-patterns as authoritative — do NOT re-flag them.
+            1. Read `.github/argus/prompts/system.md` — it defines your persona,
+               rules, and the hard line that you never approve to merely clear a gate.
+            2. Read `${{ inputs.config-path || '.github/argus/config.yml' }}` to learn
+               which skills are enabled, the severity gate, and path rules
+               (skip/strict globs).
+            3. Load every enabled skill from `.github/argus/skills/<name>.md`. Each
+               is a rubric.
+            4. Load repo memory: `.github/argus/memory/conventions.md`,
+               `.github/argus/memory/accepted-patterns.md`, and any relevant
+               `.github/argus/memory/knowledge/*`. Treat accepted-patterns as
+               authoritative — do NOT re-flag them.
             5. Get the diff: `gh pr diff ${{ github.event.pull_request.number || github.event.issue.number }}`.
                Read the surrounding code (not just diff hunks) for anything you're
                unsure about — false positives from missing context are the #1 way
@@ -83,7 +113,7 @@ jobs:
             6. For each enabled skill, apply its rubric and collect findings.
                Dedupe across skills. Assign each finding a severity
                (blocker | major | minor | nit) and a `file:line` citation.
-            7. Follow `prompts/verdict.md` to decide + submit the review:
+            7. Follow `.github/argus/prompts/verdict.md` to decide + submit the review:
                - Post concise inline comments for real issues only.
                - Post a summary keyed by skill, with a findings table.
                - If any confirmed blocker/major → `gh pr review <n> --request-changes`.
@@ -92,8 +122,12 @@ jobs:
                  have zero blocker/major findings AND you would genuinely sign off.
             8. If you notice a pattern the repo keeps accepting, or a convention
                worth recording, add a short "📝 Memory suggestion" section — a human
-               will decide whether to merge it into `memory/`.
+               will decide whether to merge it into `.github/argus/memory/`.
+
+            If any harness file above is missing, say so explicitly at the top of
+            your review instead of silently falling back to an unguided review.
 
             Be concrete, cite file:line, and prefer precision over volume.
           claude_args: >-
-            --model claude-sonnet-4-6 --allowedTools "Bash(gh pr diff:*),Bash(gh pr view:*),Bash(gh pr review:*),Bash(gh pr comment:*),Read,Grep,Glob"
+            --model ${{ inputs.model || 'claude-sonnet-5' }}
+            --allowedTools "Bash(gh pr diff:*),Bash(gh pr view:*),Bash(gh pr review:*),Bash(gh pr comment:*),Read,Grep,Glob"
