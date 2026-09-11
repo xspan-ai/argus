@@ -93,6 +93,7 @@ jobs:
           fi
 
       - name: Run Argus
+        id: argus
         uses: anthropics/claude-code-action@v1
         with:
           # Either secret works; CLAUDE_CODE_OAUTH_TOKEN takes precedence if set.
@@ -141,3 +142,18 @@ jobs:
           claude_args: >-
             --model ${{ inputs.model || 'claude-sonnet-5' }}
             --allowedTools "Bash(gh pr diff:*),Bash(gh pr view:*),Bash(gh pr review:*),Bash(gh pr comment:*),Read,Grep,Glob"
+
+      # claude-code-action exits 0 in two situations where it reviewed nothing:
+      # an absent credential, and its workflow-validation guard (it refuses to run
+      # when this file differs from the copy on the repo's default branch — normal
+      # on the PR that introduces or edits it). A green check that reviewed nothing
+      # is the one outcome a mandatory review gate must never produce.
+      - name: Verify Argus actually reviewed
+        env:
+          CONCLUSION: ${{ steps.argus.outputs.conclusion }}
+        run: |
+          if [ "$CONCLUSION" != "success" ]; then
+            echo "::error title=Argus did not review this PR::claude-code-action finished without reviewing (conclusion='"'"'${CONCLUSION:-<empty>}'"'"'). Most often this is the action'"'"'s workflow-validation guard: it only runs when .github/workflows/argus.yml on this branch is identical to the copy on the repository default branch. That is expected on a PR that adds or edits this workflow and clears once it merges. Failing here on purpose: a skipped run must never read as a passing review."
+            exit 1
+          fi
+          echo "Argus completed a review (conclusion=success)."
