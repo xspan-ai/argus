@@ -151,7 +151,14 @@ jobs:
             6. For each enabled skill, apply its rubric and collect findings.
                Dedupe across skills. Assign each finding a severity
                (blocker | major | minor | nit) and a `file:line` citation.
-            7. Follow `.argus/prompts/verdict.md` to decide + submit the review:
+            7. Follow `.argus/prompts/verdict.md` to decide + submit the review.
+               You MUST submit a review for the current head commit on every run,
+               including when you have already reviewed an earlier commit on this
+               PR. If the new commits resolve your previous findings, or change
+               nothing you care about, still post a short verdict saying exactly
+               that. Silence is not an acceptable outcome: a run that posts
+               nothing is indistinguishable from a broken reviewer, and this
+               check is what tells the team the commit was looked at.
                - Post concise inline comments for real issues only.
                - Post a summary keyed by skill, with a findings table.
                - If any confirmed blocker/major → `gh pr review <n> --request-changes`.
@@ -184,4 +191,25 @@ jobs:
             exit 0
           fi
           echo "::error title=Argus did not review this PR::claude-code-action finished with conclusion=[${CONCLUSION:-empty}] rather than success, so no review was produced. Common causes: the action workflow-validation guard, which only runs when .github/workflows/argus.yml on this branch matches the copy on the default branch (expected on a PR that adds or edits this workflow), or an API/model error in the step above. Failing deliberately, because a run that reviewed nothing must never report a passing check."
+          exit 1
+
+      # The action can exit success having posted nothing — seen on ~15% of
+      # re-review runs, where the agent decided its earlier review still stood.
+      # conclusion=success alone therefore does not mean this commit was
+      # reviewed, which is the one guarantee a required check has to provide.
+      - name: Verify a review exists for this commit
+        if: github.event_name == 'pull_request'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR: ${{ github.event.pull_request.number }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          REPO: ${{ github.repository }}
+        run: |
+          n=$(gh api "repos/$REPO/pulls/$PR/reviews" --paginate \
+                --jq "[.[] | select(.commit_id == \"$HEAD_SHA\") | select(.body | test(\"Argus review\"))] | length")
+          if [ "${n:-0}" -ge 1 ]; then
+            echo "Found $n Argus review(s) for $HEAD_SHA."
+            exit 0
+          fi
+          echo "::error title=Argus posted no review for this commit::The action completed successfully but no Argus review exists for $HEAD_SHA. This happens when the agent decides an earlier review still stands and posts nothing. Failing deliberately: a green check must mean this commit was reviewed. Re-run, or comment @argus review."
           exit 1
