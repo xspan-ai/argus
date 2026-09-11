@@ -5,10 +5,15 @@ name: Argus Review
 # xspan-ai fork. Differences from upstream karlmehta/argus:
 #   • Secrets are declared explicitly under workflow_call.secrets, so callers
 #     pass exactly the LLM credential and never `secrets: inherit`.
-#   • The review harness (config, prompts, skills, memory) is read from the
-#     CALLING repo under .github/argus/ — actions/checkout in a reusable
-#     workflow checks out the caller, so upstream's repo-root paths resolved
-#     to nothing and the reviewer ran unguided.
+#   • The harness is split by what is genuinely shared vs genuinely local.
+#     actions/checkout in a reusable workflow checks out the CALLER, so
+#     upstream's repo-root paths resolved to nothing and the reviewer ran
+#     unguided. Now: the shared rubrics (prompts/, skills/) are checked out
+#     from this repo at `harness-ref` into .argus/, while each consuming repo
+#     keeps its own .github/argus/config.yml and .github/argus/memory/.
+#     Memory stays local on purpose — accepted-patterns.md is a standing
+#     security-exception list, and an exception granted in one repo must not
+#     silently apply to the others.
 #   • Comment re-runs are restricted to org members/collaborators.
 #
 # Argus reads the diff and the surrounding code, applies each enabled review
@@ -36,6 +41,13 @@ on:
         description: Model id passed to claude-code-action.
         type: string
         default: claude-sonnet-4-6
+      harness-ref:
+        description: >-
+          Ref of xspan-ai/argus to take the shared rubrics from. Callers should
+          pass the same commit SHA they pin `uses:` to — a mismatch means the
+          review policy in force is not the one that was reviewed.
+        type: string
+        default: main
     secrets:
       CLAUDE_CODE_OAUTH_TOKEN:
         description: Claude Code OAuth token. Takes precedence when both are set.
@@ -82,6 +94,13 @@ jobs:
           # PR head — check out the PR so a re-run reviews the code under review.
           ref: ${{ github.event_name == 'issue_comment' && format('refs/pull/{0}/head', github.event.issue.number) || '' }}
 
+      - name: Checkout the shared Argus rubrics
+        uses: actions/checkout@v4
+        with:
+          repository: xspan-ai/argus
+          ref: ${{ inputs.harness-ref || 'main' }}
+          path: .argus
+
       - name: Require an LLM credential
         env:
           OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
@@ -103,15 +122,18 @@ jobs:
             You are **Argus**, this repository's automated PR reviewer.
             Review pull request #${{ github.event.pull_request.number || github.event.issue.number }}.
 
-            The review harness lives in this repository under `.github/argus/`.
+            Two locations matter, and the distinction is deliberate:
+              • `.argus/` — the shared org rubrics (prompts, skills). Same for
+                every repo. Read-only policy.
+              • `.github/argus/` — THIS repo's own config and memory. Local.
             Follow the harness instructions exactly:
 
-            1. Read `.github/argus/prompts/system.md` — it defines your persona,
+            1. Read `.argus/prompts/system.md` — it defines your persona,
                rules, and the hard line that you never approve to merely clear a gate.
             2. Read `${{ inputs.config-path || '.github/argus/config.yml' }}` to learn
                which skills are enabled, the severity gate, and path rules
                (skip/strict globs).
-            3. Load every enabled skill from `.github/argus/skills/<name>.md`. Each
+            3. Load every enabled skill from `.argus/skills/<name>.md`. Each
                is a rubric.
             4. Load repo memory: `.github/argus/memory/conventions.md`,
                `.github/argus/memory/accepted-patterns.md`, and any relevant
@@ -124,7 +146,7 @@ jobs:
             6. For each enabled skill, apply its rubric and collect findings.
                Dedupe across skills. Assign each finding a severity
                (blocker | major | minor | nit) and a `file:line` citation.
-            7. Follow `.github/argus/prompts/verdict.md` to decide + submit the review:
+            7. Follow `.argus/prompts/verdict.md` to decide + submit the review:
                - Post concise inline comments for real issues only.
                - Post a summary keyed by skill, with a findings table.
                - If any confirmed blocker/major → `gh pr review <n> --request-changes`.
