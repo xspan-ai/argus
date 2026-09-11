@@ -67,8 +67,13 @@ permissions:
   issues: read
   id-token: write        # required by claude-code-action for OIDC to api.anthropic.com
 
+# Scoped per event lane, NOT per PR alone. A comment on a PR creates a run in
+# this group, and with cancel-in-progress that run would cancel an in-flight
+# review before it could post — which is exactly what happened on xspan-api,
+# where claude-review-dev comments on every PR inside Argus's ~160s window.
+# Successive pushes still cancel each other, which is the behaviour we want.
 concurrency:
-  group: argus-${{ github.event.pull_request.number || github.event.issue.number }}
+  group: argus-${{ github.event.pull_request.number || github.event.issue.number }}-${{ github.event_name }}
   cancel-in-progress: true
 
 jobs:
