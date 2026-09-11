@@ -35,7 +35,7 @@ on:
       model:
         description: Model id passed to claude-code-action.
         type: string
-        default: claude-sonnet-5
+        default: claude-sonnet-4-6
     secrets:
       CLAUDE_CODE_OAUTH_TOKEN:
         description: Claude Code OAuth token. Takes precedence when both are set.
@@ -140,7 +140,7 @@ jobs:
 
             Be concrete, cite file:line, and prefer precision over volume.
           claude_args: >-
-            --model ${{ inputs.model || 'claude-sonnet-5' }}
+            --model ${{ inputs.model || 'claude-sonnet-4-6' }}
             --allowedTools "Bash(gh pr diff:*),Bash(gh pr view:*),Bash(gh pr review:*),Bash(gh pr comment:*),Read,Grep,Glob"
 
       # claude-code-action exits 0 in two situations where it reviewed nothing:
